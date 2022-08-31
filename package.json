@@ -1,0 +1,13 @@
+{
+  "name": "pulumi-azure-nodejs-example",
+  "version": "1.0.2",
+  "author": "FrederickHW Chu <frederickhw.chu@moxa.com>",
+  "license": "MIT",
+  "dependencies": {
+    "@release-it/conventional-changelog": "^5.0.0",
+    "release-it": "^15.2.0"
+  },
+  "devDependencies": {
+    "@thingspro-cloud/devops": "^0.4.60"
+  }
+}

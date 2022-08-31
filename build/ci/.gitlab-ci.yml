@@ -1,0 +1,115 @@
+include:
+  - local: build/ci/gitlab-ci/rules/all-pipeline-source.yaml
+  - local: build/ci/gitlab-ci/rules/deploy.yaml
+  - local: build/ci/gitlab-ci/rules/merge-request.yaml
+  - local: build/ci/gitlab-ci/rules/schedule.yaml
+
+stages:
+  - deps
+  - release
+  - build
+  - post-build
+
+cache:
+  - key:
+      files:
+        - yarn.lock
+      prefix: nodejs
+    paths:
+      - node_modules/
+    policy: pull
+
+variables:
+  CI_JOB_REPO: 233704588990.dkr.ecr.us-west-2.amazonaws.com/thingspro-cloud-ci/ci-job-image
+
+deps:nodejs:
+  stage: deps
+  image: "${CI_JOB_REPO}:node-14"
+  script:
+    - yarn
+  cache:
+    - key:
+        files:
+          - yarn.lock
+        prefix: nodejs
+      paths:
+        - node_modules/
+      policy: pull-push
+  rules:
+    - !reference [.rules-all-pipeline-source-dev]
+    - !reference [.rules-all-pipeline-source-prod]
+
+deps:function:
+  stage: deps
+  image: "${CI_JOB_REPO}:node-14"
+  script:
+    - yarn
+  cache:
+    - key:
+        files:
+          - function/yarn.lock
+        prefix: nodejs
+      paths:
+        - function/node_modules/
+      policy: pull-push
+  rules:
+    - !reference [.rules-all-pipeline-source-dev]
+    - !reference [.rules-all-pipeline-source-prod]
+
+release:
+  stage: release
+  image: ${CI_JOB_REPO}:node-14
+  variables:
+    GITLAB_USER: ci-release-token
+    GIT_SUBMODULE_STRATEGY: recursive
+  script:
+    - echo -e "machine gitlab.com\nlogin ${GITLAB_USER}\npassword ${GITLAB_TOKEN}" > ~/.netrc
+    - git remote set-url origin "https://${GITLAB_USER}@gitlab.com/$CI_PROJECT_PATH.git"
+    - mkdir -p ~/.ssh && ssh-keyscan gitlab.com >> ~/.ssh/known_hosts
+    - git branch -D temp || true; git checkout -b temp
+    - git branch -D $CI_COMMIT_BRANCH || true;
+    - git fetch -p; git checkout $CI_COMMIT_BRANCH; git pull
+    - git config --global user.email "thingspro-cloud-dev@moxa.com"
+    - git config --global user.name "CI Robot"
+    - git config push.default current
+    - yarn release-it --npm.skipChecks --config ./build/.release-it.yaml -VV
+  rules:
+    - !reference [.rules-deploy-prod]
+
+build:zip:
+  stage: build
+  image: mcr.microsoft.com/azure-cli:2.9.1
+  before_script: az login --service-principal -u ${ARM_CLIENT_ID} -p ${ARM_CLIENT_SECRET} --tenant ${ARM_TENANT_ID}
+  script:
+    - export VERSION=$(jq  -r .version package.json)
+    - cd function/ && zip -r function.zip ./*
+    - az storage blob upload --account-name ${AZ_STORAGE_ACCOUNT}${ENV//[!0-9a-z]/} --container-name ${AZ_STORAGE_CONTAINER} --name function-$ENV-v$VERSION-$CI_COMMIT_SHORT_SHA.zip --file function.zip --auth-mode key
+    - echo "VERSION=$VERSION" > ../.env
+  artifacts:
+    expire_in: 60 days
+    reports:
+      dotenv: .env
+  cache:
+    - key:
+        files:
+          - function/yarn.lock
+        prefix: nodejs
+      paths:
+        - function/node_modules/
+      policy: pull
+  rules:
+    - !reference [.rules-all-pipeline-source-dev]
+    - !reference [.rules-all-pipeline-source-prod]
+
+post-build:trigger:
+  stage: post-build
+  variables:
+    UPSTREAM_MERGE_REQUEST_TARGET_BRANCH_NAME: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME
+    UPSTREAM_PIPELINE_SOURCE: $CI_PIPELINE_SOURCE
+    UPSTREAM_CI_COMMIT_SHORT_SHA: $CI_COMMIT_SHORT_SHA
+  trigger:
+    project: moxa/ibg/software/platform/cloud/public/examples/nodejs-azure-function-example/deployments/pulumi-azure-function
+    branch: $CI_COMMIT_BRANCH
+  rules:
+    - !reference [.rules-all-pipeline-source-dev]
+    - !reference [.rules-all-pipeline-source-prod]
